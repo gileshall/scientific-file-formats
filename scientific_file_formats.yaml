@@ -1,0 +1,1734 @@
+# Scientific File Formats. A Field Guide
+# =======================================
+# A reference catalog of file formats used across the sciences.
+# Last revised: 2026-05-14
+#
+# READ THIS FIRST
+# ---------------
+# - "Estimated count / size" is the weakest column. For curated archives (PDB,
+#   SRA, GenBank) the numbers are exact-ish from primary sources. For formats
+#   used in private clinical, industrial, or academic storage (DICOM, SEG-Y,
+#   ROOT) the numbers are educated order-of-magnitude guesses with a "~"
+#   prefix and a "basis" sub-field explaining how they were arrived at. Treat
+#   anything not from a primary registry as wrong by at least 0.5 dex.
+# - "Age" is the year of the first public spec (not first private use).
+# - "Shared by" lists fields that use the format meaningfully, not every
+#   field that ever read one.
+# - Where there is a choice between a redirect and the canonical doc, the
+#   canonical doc is preferred, even if it's a PDF.
+#
+# CORE COLUMNS
+# ------------
+#   field, subfield, purpose, dimensionality, efficiency, age, spec,
+#   estimated_count_and_size, public_repositories, succeeds, open_source_tooling,
+#   shared_by
+#
+# SUGGESTED ADDITIONAL COLUMNS
+# ----------------------------
+#   encoding             text | binary | text+binary | container (zip/hdf5/...)
+#   self_describing      does the file carry its own schema?
+#   compression          none | optional | required | block-level (bgzf, etc.)
+#   indexable            random access? by what (byte offset, coordinate, key)?
+#   streaming            can you process row-by-row without seeking?
+#   governing_body       who owns the spec (IETF, ISO, WMO, NEMA, GA4GH, none)
+#   license              spec license; openness signal
+#   successor            format(s) actively trying to replace it
+#   flagship_corpus      the "killer dataset" that anchors the format
+#   quirks               the footgun(s), what bites you at 3am
+#   story                one-line cultural lore (the punch-card legacy, etc.)
+#   parser_count         rough number of independent open-source parsers
+#                         (a proxy for ecosystem maturity)
+#   schema_evolution     how do versions coexist? hard breaks, namespaces, etc.
+#
+# Also worth considering:
+#   - tabix_compatible       can you bgzip+index it as a TSV? (very bio-coded)
+#   - cloud_native           does it support range reads / object storage well?
+#   - metadata_richness      "filename only" → "filename + 200 fields"
+#   - identifier_scheme      how the rest of the ecosystem references entries
+
+schema_notes:
+  efficiency_scale:
+    - 1: terrible (e.g. plain text floats, XML for arrays)
+    - 2: poor   (verbose text, no compression)
+    - 3: ok     (compressed text or naive binary)
+    - 4: good   (typed binary with optional compression)
+    - 5: excellent (columnar, chunked, indexed, cloud-native)
+  dimensionality_terms:
+    tabular_1d: "rows of a single record type"
+    tabular_2d: "rows × columns, possibly heterogeneous types"
+    interval: "coordinates along a 1-D axis (genome, time series)"
+    raster_2d: "image"
+    raster_nd: "N-dimensional arrays (volumes, hypercubes)"
+    graph: "nodes and edges, possibly attributed"
+    tree: "hierarchical (phylogeny, file system)"
+    sequence: "ordered symbols (DNA, protein, audio frames)"
+    record: "single document / structured object"
+    mixed: "heterogeneous; many of the above in one container"
+
+# ============================================================================
+# LIFE SCIENCES
+# ============================================================================
+
+life_sciences:
+
+  genomics:
+
+    - name: FASTA
+      purpose: nucleotide and protein sequence storage
+      dimensionality: sequence
+      encoding: text
+      efficiency: 2
+      age: 1985
+      spec: https://en.wikipedia.org/wiki/FASTA_format
+      self_describing: weak (only the header line)
+      compression: optional (gzip/bgzip ubiquitous)
+      indexable: yes via .fai (samtools faidx)
+      streaming: yes
+      governing_body: none (de facto standard from Pearson's FASTA program)
+      license: public domain
+      successor: 2bit, .fa.gz + .fai is good enough that no replacement has stuck
+      estimated_count_and_size:
+        order_of_magnitude: "hundreds of billions of files; SRA-equivalent
+          uncompressed is many exabytes"
+        basis: "every reference genome, every assembly, every blast database;
+          GenBank flatfile holdings convert to FASTA trivially"
+      public_repositories: [NCBI, ENA, DDBJ, RefSeq, UniProt, Ensembl, UCSC]
+      open_source_tooling: [samtools, seqkit, seqtk, biopython, pyfaidx, bioawk]
+      shared_by: [proteomics, phylogenetics]
+      quirks: |
+        Header line conventions are anarchic. ">chr1" vs ">1" vs
+        ">NC_000001.11" vs ">gi|...|ref|NC_000001.11|". Every tool parses
+        differently. Line-wrap to 60 or 80 chars is conventional but not
+        required, so naïve byte offsets break.
+      story: |
+        Named after the FASTA program (William Pearson, 1985), itself the
+        successor to FASTP. The format is one line of metadata, then
+        sequence. That's it. It refuses to die because that's the entire
+        point.
+
+    - name: FASTQ
+      purpose: sequencing reads with per-base quality scores
+      dimensionality: sequence
+      encoding: text
+      efficiency: 2
+      age: 2009 # the year the Cock et al. paper described the de-facto Sanger variant
+      spec: https://academic.oup.com/nar/article/38/6/1767/3112533
+      self_describing: no (quality encoding offset has to be guessed)
+      compression: optional but practically required at scale (gzip, bgzip)
+      indexable: rarely indexed; usually streamed
+      streaming: yes (4 lines per record)
+      governing_body: none. Sanger Institute's convention won
+      license: public domain
+      successor: CRAM for aligned reads; ORA (Illumina), Genozip, SPRING for raw
+      estimated_count_and_size:
+        order_of_magnitude: "SRA alone is ~50 PB (projected 2025), the bulk
+          of which is FASTQ-equivalent"
+        basis: "NCBI SRA Data WG projection of ~49 PB by 2025; ENA + DDBJ
+          mirror most of it"
+      public_repositories: [SRA, ENA, DDBJ, EGA (controlled)]
+      open_source_tooling:
+        [samtools, seqkit, fastp, fastqc, bbduk, cutadapt, trimmomatic]
+      shared_by: [single-cell, metagenomics]
+      quirks: |
+        Phred+33 vs Phred+64 quality offsets caused years of silent
+        miscalls. The 4-line-per-record assumption breaks when sequence
+        or quality contain '@' or '+'. There is no record terminator.
+      story: |
+        Born at the Sanger Institute as an undocumented internal format,
+        then retrofitted with a spec after the world had already adopted
+        three mutually incompatible quality encodings (Sanger, Solexa,
+        Illumina 1.3+, Illumina 1.5+). The 2009 NAR paper is essentially
+        archaeology.
+
+    - name: SAM
+      purpose: pairwise alignments of reads to a reference
+      dimensionality: tabular_2d + interval
+      encoding: text (tab-separated)
+      efficiency: 2
+      age: 2009
+      spec: https://samtools.github.io/hts-specs/SAMv1.pdf
+      self_describing: yes (@HD, @SQ, @RG, @PG header)
+      compression: optional gzip; sortable but not block-indexed
+      indexable: only after conversion to BAM (.bai) or CRAM (.crai)
+      streaming: yes
+      governing_body: GA4GH / hts-specs (de facto)
+      license: open (MIT-style hts-specs)
+      successor: BAM (binary) → CRAM (reference-compressed)
+      shared_by: [transcriptomics, metagenomics, single-cell]
+      open_source_tooling: [samtools, picard, pysam, htsjdk, sambamba]
+      quirks: |
+        The CIGAR string mini-language ('M' is ambiguous: match OR
+        mismatch; that's what '=' and 'X' fixed). Optional tags are
+        free-for-all and tool-specific. MAPQ semantics differ by aligner.
+
+    - name: BAM
+      purpose: binary, block-compressed SAM
+      dimensionality: tabular_2d + interval
+      encoding: binary (BGZF-wrapped)
+      efficiency: 4
+      age: 2009
+      spec: https://samtools.github.io/hts-specs/SAMv1.pdf
+      self_describing: yes
+      compression: required (BGZF, gzip-compatible blocks ≤64 KiB)
+      indexable: yes (.bai, .csi), coordinate-sorted; random access by region
+      streaming: yes (block-aligned)
+      governing_body: GA4GH / hts-specs
+      successor: CRAM
+      estimated_count_and_size:
+        order_of_magnitude: "the majority of aligned NGS data on disk;
+          institutional storage globally is in the high single-digit EB"
+        basis: "infer from SRA volume × typical alignment/raw ratio"
+      flagship_corpus: 1000 Genomes, gnomAD raw alignments, TCGA
+      story: |
+        BGZF (blocked gzip) is the single most important idea in genomic
+        file formats: it's gzip-compatible (you can zcat it) AND randomly
+        seekable. Heng Li's invention; tabix exists because BGZF exists.
+
+    - name: CRAM
+      purpose: reference-based compressed alignments
+      dimensionality: tabular_2d + interval
+      encoding: binary
+      efficiency: 5
+      age: 2011 # EBI's ENA introduced it
+      spec: https://samtools.github.io/hts-specs/CRAMv3.pdf
+      self_describing: yes
+      compression: required (reference-relative + rANS/gzip)
+      indexable: yes (.crai)
+      streaming: yes
+      successor: CRAM 4 in draft
+      open_source_tooling: [samtools, htsjdk, cram-tools, scramble]
+      quirks: |
+        Lossy compression of quality scores is opt-in but easy to enable
+        by accident. Requires the original reference FASTA bit-identical
+        to what was used at write time, including ambiguity codes.
+        MD5 mismatch on the reference and you cannot decode.
+
+    - name: VCF
+      purpose: variant calls (SNPs, indels, SVs)
+      dimensionality: tabular_2d + interval
+      encoding: text (tab-separated with ## headers)
+      efficiency: 2
+      age: 2009
+      spec: https://samtools.github.io/hts-specs/VCFv4.4.pdf
+      self_describing: yes (rich ## header lines define every INFO/FORMAT field)
+      compression: bgzip universal at scale
+      indexable: yes (tabix .tbi, .csi)
+      streaming: yes
+      governing_body: GA4GH / hts-specs
+      successor: BCF (binary); gVCF for per-site coverage; SAVVY, GenomicSQLite experimental
+      estimated_count_and_size:
+        order_of_magnitude: "billions of files; dbSNP/gnomAD alone are PB-scale"
+        basis: gnomAD v4 is ~25 TB uncompressed VCF
+      public_repositories: [dbSNP, gnomAD, ClinVar, COSMIC, 1000G, UK Biobank]
+      open_source_tooling: [bcftools, vcftools, htsjdk, cyvcf2, pyvcf3, hail]
+      shared_by: [clinical genomics, population genetics, cancer genomics]
+      quirks: |
+        Multiallelic vs split representation is the single greatest
+        source of analysis bugs in human genetics. Normalization
+        (left-align + atomize) is necessary but not sufficient for
+        cross-cohort comparison.
+      story: |
+        Originally designed for the 1000 Genomes Project. Whether
+        VCF is itself a TSV or a "TSV with a soul" depends on how
+        many INFO fields you've grepped today.
+
+    - name: BCF
+      purpose: binary VCF
+      dimensionality: tabular_2d + interval
+      encoding: binary (BGZF)
+      efficiency: 4
+      age: 2012
+      spec: https://samtools.github.io/hts-specs/VCFv4.4.pdf
+      successor: none active
+      shared_by: [population genetics]
+
+    - name: BED
+      purpose: genomic intervals with optional metadata
+      dimensionality: interval
+      encoding: text (tab-separated, 3–12 columns)
+      efficiency: 2
+      age: 2003 # UCSC
+      spec: https://genome.ucsc.edu/FAQ/FAQformat.html#format1
+      self_describing: no (you have to know which BEDn variant)
+      compression: bgzip + tabix
+      indexable: yes (tabix)
+      streaming: yes
+      governing_body: UCSC (de facto)
+      successor: BED3+ is open-ended; bigBed for indexed binary
+      open_source_tooling: [bedtools, bedops, pybedtools]
+      shared_by: [epigenomics, ChIP-seq, ATAC-seq, GWAS annotation]
+      quirks: |
+        Zero-based, half-open coordinates. Adjacent to GFF's one-based
+        closed coordinates. Off-by-one bugs across this boundary have
+        wasted thousands of person-years.
+      story: |
+        Originally a sidecar for UCSC Genome Browser custom tracks.
+        Jim Kent's "make it work in awk" aesthetic.
+
+    - name: GFF3 / GTF
+      purpose: gene annotation (features, transcripts, exons)
+      dimensionality: interval (with hierarchical parent-child)
+      encoding: text (tab-separated)
+      efficiency: 2
+      age: 2003 # GFF3
+      spec: https://github.com/The-Sequence-Ontology/Specifications/blob/master/gff3.md
+      self_describing: partly (## directives, attributes are key=value)
+      compression: bgzip + tabix
+      indexable: yes (tabix), but parent-child resolution still requires a full pass
+      streaming: yes
+      governing_body: Sequence Ontology Consortium (GFF3); GTF is a frozen GFF2 variant
+      successor: GFF3 supplanted GFF2 (mostly); GenomicFeatures DBs / Ensembl JSON for software
+      open_source_tooling: [gffread, agat, gffutils, gffcompare]
+      quirks: |
+        GTF and GFF3 look identical and aren't. Attribute syntax differs.
+        Stop codon inclusion in CDS differs by source. Ensembl, NCBI, and
+        GENCODE disagree on representation of UTRs.
+      story: |
+        GFF is older than the human genome project's first draft.
+        Every five years a working group declares the next version
+        canonical; the previous version refuses to die.
+
+    - name: bigWig / bigBed
+      purpose: indexed continuous (wig) or interval (bed) data for browsers
+      dimensionality: interval
+      encoding: binary
+      efficiency: 5
+      age: 2010
+      spec: https://genome.ucsc.edu/goldenPath/help/bigWig.html
+      self_describing: yes
+      indexable: yes (R-tree internal index, range-requestable over HTTP)
+      streaming: range queries; not stream-only
+      governing_body: UCSC
+      open_source_tooling: [ucsc-tools, pyBigWig, bigtools (Rust)]
+      shared_by: [ChIP-seq, ATAC-seq, RNA-seq coverage]
+      quirks: |
+        Cloud-native before cloud-native was cool. A single bigWig
+        served over HTTPS supports range reads with no server logic.
+
+    - name: GFA
+      purpose: assembly graphs (sequences, links, paths)
+      dimensionality: graph
+      encoding: text (tab-separated, record-type prefixed)
+      efficiency: 2
+      age: 2014
+      spec: https://github.com/GFA-spec/GFA-spec
+      self_describing: yes (H header records hold version + tags)
+      compression: optional gzip
+      indexable: no canonical index; tools build their own
+      streaming: yes (line by line)
+      successor: GFA2; rGFA (reference-graph extension); ODGI binary
+      open_source_tooling: [vg, odgi, gfatools, GraphAligner, minigraph]
+      shared_by: [pangenomics]
+      quirks: |
+        GFA1 and GFA2 are not bytewise compatible. Tools' support for
+        either varies. This is the format you cited as "departing from
+        the spreadsheet idiom", and it does, but it still wears the
+        TSV mask.
+
+    - name: MAF (Multiple Alignment Format)
+      purpose: multi-species genome alignments
+      dimensionality: interval + sequence
+      encoding: text (block-delimited)
+      efficiency: 2
+      age: 2004
+      spec: https://genome.ucsc.edu/FAQ/FAQformat.html#format5
+      shared_by: [comparative genomics]
+      successor: HAL (Hierarchical Alignment Format, HDF5-based)
+      open_source_tooling: [last, mafft-tools, hal2maf, cactus]
+
+    - name: HAL
+      purpose: reference-free multiple genome alignments at scale
+      dimensionality: graph + sequence
+      encoding: container (HDF5)
+      efficiency: 5
+      age: 2013
+      spec: https://github.com/ComparativeGenomicsToolkit/Hal
+      open_source_tooling: [hal-tools, cactus, halSynteny]
+      shared_by: [comparative genomics, evolutionary genomics]
+
+  structural_biology:
+
+    - name: PDB (legacy format)
+      purpose: 3-D atomic coordinates of macromolecules
+      dimensionality: record (3-D coordinates)
+      encoding: text, fixed-column width (80-char records)
+      efficiency: 1
+      age: 1971
+      spec: https://www.wwpdb.org/documentation/file-format
+      self_describing: weak (header records but rigid schema)
+      compression: optional gzip
+      indexable: no
+      streaming: yes (record-oriented)
+      governing_body: wwPDB
+      license: CC0
+      successor: PDBx/mmCIF (mandatory for new depositions since 2014)
+      estimated_count_and_size:
+        order_of_magnitude: "~240,000 experimental entries (Nov 2025); ~1.6M
+          when AlphaFold computed-structure models are included"
+        basis: PDBj weekly release notes; SDSC 2025 announcements
+      public_repositories: [RCSB, PDBe, PDBj, BMRB, EMDB]
+      open_source_tooling:
+        [biopython, mdanalysis, gemmi, pymol, chimera, pdbtools, openbabel]
+      shared_by: [drug discovery, chemistry, biophysics, structural ML]
+      quirks: |
+        Atom serial numbers cap at 99,999. Chain IDs are a single char.
+        Both got blown up by ribosome and capsid structures. Columns
+        31–38 are X, 39–46 Y, 47–54 Z. Parse by character position or
+        you will mis-shift hydrogens.
+      story: |
+        Born on punch cards in 1971 at Brookhaven. The 80-character
+        record is the IBM 029 keypunch's revenge. The mmCIF transition
+        took 20+ years and is still incomplete in client tooling.
+
+    - name: mmCIF / PDBx
+      purpose: same payload as PDB but proper data model
+      dimensionality: record
+      encoding: text (STAR-derived dictionary)
+      efficiency: 2
+      age: 1996
+      spec: https://mmcif.wwpdb.org/
+      self_describing: yes (dictionary-defined data items)
+      compression: optional gzip
+      governing_body: IUCr + wwPDB
+      successor: BinaryCIF (binary mmCIF, used by Mol*)
+      open_source_tooling: [gemmi, mmcif_pdbx, biopython, openstructure]
+      shared_by: [crystallography (small molecules use plain CIF)]
+
+    - name: MRC / CCP4 map
+      purpose: 3-D density maps (cryo-EM, X-ray crystallography)
+      dimensionality: raster_nd
+      encoding: binary
+      efficiency: 3
+      age: 1982
+      spec: https://www.ccp4.ac.uk/html/maplib.html
+      successor: none active; HDF5/Zarr variants discussed
+      open_source_tooling: [mrcfile (python), relion, coot, ccp4]
+      shared_by: [cryo-EM, X-ray]
+      story: |
+        MRC was the Medical Research Council's image format; CCP4 added
+        crystallography headers. Two communities, one file extension,
+        slightly different conventions for the same bytes.
+
+    - name: MTZ
+      purpose: crystallographic reflection data (structure factors)
+      dimensionality: tabular_2d (in reciprocal space)
+      encoding: binary
+      efficiency: 4
+      age: 1990s
+      spec: https://www.ccp4.ac.uk/html/mtzformat.html
+      open_source_tooling: [ccp4, gemmi, reciprocalspaceship]
+      shared_by: [chemistry crystallography]
+
+  proteomics_and_mass_spec:
+
+    - name: mzML
+      purpose: mass spectrometer output (spectra + metadata)
+      dimensionality: tabular_2d (per spectrum) + nested
+      encoding: text (XML, base64-encoded binary arrays)
+      efficiency: 1
+      age: 2008
+      spec: https://www.psidev.info/mzML
+      governing_body: HUPO Proteomics Standards Initiative (PSI)
+      successor: mzMLb (HDF5 wrapping mzML; better random access)
+      estimated_count_and_size:
+        order_of_magnitude: "PRIDE alone holds ~PB-scale; ProteomeXchange
+          aggregates ~10× more"
+        basis: EBI PRIDE annual reports
+      public_repositories: [PRIDE, MassIVE, jPOST, iProX, PeptideAtlas]
+      open_source_tooling: [pyopenms, pymzml, openms, proteowizard, msconvert]
+      shared_by: [metabolomics, lipidomics]
+      quirks: |
+        XML for binary arrays is a lossy joke; reads turn into base64
+        decode + endianness handling. 2-GB files for what would be
+        100 MB in any sensible binary format.
+
+    - name: MGF (Mascot Generic Format)
+      purpose: peptide MS/MS spectra (peak lists)
+      dimensionality: tabular_2d (per spectrum)
+      encoding: text
+      efficiency: 2
+      age: 2003
+      spec: https://www.matrixscience.com/help/data_file_help.html
+      open_source_tooling: [pyteomics, matrix-science tools]
+
+    - name: mzIdentML / mzTab
+      purpose: peptide/protein identifications and quant results
+      encoding: XML / TSV
+      age: 2011
+      spec: https://www.psidev.info/mzidentml
+      governing_body: HUPO PSI
+
+  single_cell_and_omics_containers:
+
+    - name: AnnData (.h5ad)
+      purpose: annotated cell × gene matrices for single-cell
+      dimensionality: tabular_2d + metadata
+      encoding: container (HDF5)
+      efficiency: 4
+      age: 2017
+      spec: https://anndata.readthedocs.io/
+      self_describing: yes
+      open_source_tooling: [scanpy, anndata, muon]
+      successor: AnnData on Zarr; SOMA / tiledb-soma (CZI)
+      shared_by: [spatial transcriptomics]
+      flagship_corpus: CZI CELLxGENE Discover (~100M cells, growing)
+
+    - name: Loom
+      purpose: sparse expression matrices (Linnarsson lab)
+      encoding: container (HDF5)
+      age: 2017
+      spec: https://linnarssonlab.org/loompy/format/index.html
+      open_source_tooling: [loompy, scanpy]
+
+    - name: Matrix Market (10x MTX bundle)
+      purpose: sparse matrix exchange (Cell Ranger output)
+      dimensionality: tabular_2d (sparse)
+      encoding: text
+      age: 1996 # NIST
+      spec: https://math.nist.gov/MatrixMarket/formats.html
+      shared_by: [linear algebra, numerical computing]
+      quirks: |
+        A 3-file bundle: matrix.mtx + barcodes.tsv + features.tsv.
+        Out-of-sync versions are a major source of "I lost half my cells".
+
+  microscopy_and_bioimaging:
+
+    - name: TIFF / OME-TIFF
+      purpose: multi-channel, multi-Z, multi-T microscopy images
+      dimensionality: raster_nd
+      encoding: binary (TIFF) with XML metadata (OME)
+      efficiency: 3 (tiled+LZW), 4 (BigTIFF)
+      age: 1986 (TIFF) / 2005 (OME-TIFF)
+      spec: https://docs.openmicroscopy.org/ome-model/latest/ome-tiff/
+      governing_body: Open Microscopy Environment
+      successor: OME-Zarr (cloud-native, chunked, multi-resolution)
+      open_source_tooling: [bioformats, tifffile, fiji/imagej, napari, qupath]
+      shared_by: [pathology, remote sensing, GIS]
+
+    - name: OME-Zarr (NGFF)
+      purpose: next-generation file format for bioimaging
+      dimensionality: raster_nd
+      encoding: container (Zarr directory tree)
+      efficiency: 5
+      age: 2020
+      spec: https://ngff.openmicroscopy.org/latest/
+      open_source_tooling: [ome-zarr-py, bioformats2raw, napari, vizarr]
+      cloud_native: yes, designed for it
+      shared_by: [neuroimaging connectomics, light-sheet, electron microscopy]
+
+    - name: CZI (Carl Zeiss Image)
+      purpose: proprietary Zeiss microscope output
+      encoding: binary
+      age: 2008
+      spec: https://github.com/zeiss-microscopy/libCZI
+      open_source_tooling: [aicspylibczi, pylibCZIrw]
+      quirks: vendor-controlled spec; reverse-engineered for years
+
+    - name: ND2 (Nikon)
+      purpose: Nikon NIS-Elements microscope output
+      encoding: binary
+      open_source_tooling: [nd2 (python), bioformats]
+      quirks: |
+        Spec is not publicly released. Open-source readers depend on
+        Bioformats' Java reader or reverse engineering by the nd2
+        Python library.
+
+    - name: LIF / LSM / OIB / OIF / Imaris (.ims)
+      purpose: per-vendor microscope formats (Leica, Zeiss old, Olympus, Bitplane)
+      encoding: binary
+      story: |
+        Every microscope vendor invented their own format. The
+        OME-Bioformats project (Glencoe / Dundee) reverse-engineered
+        all of them so scientists could quit the vendor lock-in. It's
+        the single most thankless heroic effort in scientific software.
+
+  phylogenetics:
+
+    - name: Newick
+      purpose: trees with branch lengths
+      dimensionality: tree
+      encoding: text (parenthetical)
+      efficiency: 2
+      age: 1986 # the Newick's Lobster House meeting
+      spec: http://evolution.genetics.washington.edu/phylip/newick_doc.html
+      open_source_tooling: [ete3, dendropy, biopython, ape (R)]
+      shared_by: [linguistics, anything tree-shaped]
+      quirks: |
+        No unique node IDs unless you assign internal-node labels.
+        Comments-in-square-brackets are ad hoc; NHX extends them; no
+        common parser does both the same way.
+      story: |
+        Allegedly designed over dinner at Newick's Lobster House in
+        Dover, NH (1986). The format is the closest thing scientific
+        computing has to S-expressions.
+
+    - name: NEXUS
+      purpose: trees + character matrices + commands (one file, many blocks)
+      dimensionality: tree + tabular_2d + mixed
+      encoding: text (block-oriented)
+      efficiency: 1
+      age: 1997
+      spec: https://academic.oup.com/sysbio/article/46/4/590/1629695
+      open_source_tooling: [PAUP*, MrBayes, dendropy, biopython]
+      quirks: |
+        Block syntax is parser-dependent. MrBayes-flavored NEXUS does
+        things PAUP*-flavored NEXUS chokes on. Comments execute as
+        commands in some tools.
+
+    - name: PhyloXML / NeXML
+      purpose: XML-based phylogenies with rich metadata
+      encoding: XML
+      age: 2007 / 2012
+      spec: http://www.phyloxml.org/
+      story: |
+        The "let's do trees in XML" attempt. Adoption never beat
+        Newick's stubborn convenience.
+
+  pathways_and_systems_biology:
+
+    - name: SBML
+      purpose: biological reaction networks (kinetic models)
+      dimensionality: graph
+      encoding: XML
+      age: 2003
+      spec: https://sbml.org/documents/
+      governing_body: SBML community / COMBINE
+      open_source_tooling: [libsbml, copasi, tellurium, cobrapy]
+      flagship_corpus: BioModels Database
+
+    - name: BioPAX
+      purpose: pathway data (signaling, metabolic) at higher abstraction
+      encoding: OWL/RDF
+      age: 2004
+      spec: http://www.biopax.org/
+      successor: still active; competing with SBGN-ML
+
+    - name: SBGN-ML
+      purpose: standard graphical notation for pathway diagrams
+      encoding: XML
+      age: 2009
+
+  sequence_database_flatfiles:
+
+    - name: GenBank flat file
+      purpose: annotated sequence records (the canonical NCBI flatfile)
+      dimensionality: record
+      encoding: text (fixed-column "LOCUS" headers + feature table)
+      efficiency: 1
+      age: 1982
+      spec: https://www.ncbi.nlm.nih.gov/Sitemap/samplerecord.html
+      estimated_count_and_size:
+        order_of_magnitude: "GenBank traditional division: ~3 billion records,
+          ~10 TB compressed flatfile; WGS division is ~30× larger"
+        basis: NCBI release notes (release 263, Aug 2024)
+      public_repositories: [GenBank, ENA (EMBL flat file), DDBJ]
+      open_source_tooling: [biopython, readseq, EMBOSS]
+      shared_by: [virology, microbiology]
+      story: |
+        The grandparent. Fixed-width fields, 80-column width
+        (Hollerith again). Every textbook biology example you've ever
+        seen of "here's a gene" was a GenBank record.
+
+    - name: EMBL flat file
+      purpose: European equivalent of GenBank
+      encoding: text (different column layout, same payload)
+      age: 1980
+      spec: https://www.ebi.ac.uk/ena/WebFeat/
+
+  microbiome:
+
+    - name: BIOM
+      purpose: OTU/feature tables for microbiome studies
+      dimensionality: tabular_2d (sparse)
+      encoding: container (HDF5) or JSON
+      efficiency: 4 (HDF5) / 1 (JSON)
+      age: 2011
+      spec: https://biom-format.org/documentation/format_versions/biom-2.1.html
+      open_source_tooling: [biom-python, qiime2, mothur]
+      shared_by: [ecology]
+
+
+# ============================================================================
+# NEUROSCIENCE
+# ============================================================================
+
+neuroscience:
+
+  neuroimaging:
+
+    - name: NIfTI
+      purpose: 3-D / 4-D MRI/fMRI volumes
+      dimensionality: raster_nd
+      encoding: binary (.nii) or gzip (.nii.gz)
+      efficiency: 3
+      age: 2004
+      spec: https://nifti.nimh.nih.gov/nifti-1
+      successor: NIfTI-2 (2011, 64-bit dimensions); ongoing push toward BIDS+OME-Zarr
+      open_source_tooling: [nibabel, fsl, freesurfer, afni, spm, ants]
+      flagship_corpus: HCP, UK Biobank imaging, OpenNeuro, ABCD
+      estimated_count_and_size:
+        order_of_magnitude: "tens of PB in public neuroimaging repositories;
+          UK Biobank imaging alone is ~PB-scale"
+        basis: UK Biobank imaging study, OpenNeuro stats
+      story: |
+        NIfTI-1 fit a header into 348 bytes by reusing the older ANALYZE
+        7.5 header bytes for new purposes (the 'magic' fields tell you
+        which interpretation applies). Bytes 0-3 = dim[0]; bytes 252-255
+        = the magic 'ni1' or 'n+1'. Pure 1990s pragmatism.
+
+    - name: BIDS (Brain Imaging Data Structure)
+      purpose: not a file format, a *directory layout* and naming convention
+      dimensionality: mixed
+      encoding: filesystem (NIfTI + JSON + TSV)
+      age: 2016
+      spec: https://bids-specification.readthedocs.io/
+      governing_body: BIDS Steering Group
+      open_source_tooling: [bids-validator, pybids, fmriprep, mriqc]
+      shared_by: [EEG, MEG, iEEG, PET, microscopy]
+      story: |
+        BIDS is the format the field needed for 20 years: not new
+        bytes, just a contract about where they live and how they're
+        named. It is arguably more impactful than any single file
+        format in neuroimaging.
+
+    - name: MINC
+      purpose: medical imaging container (Montreal Neurological Institute)
+      encoding: container (NetCDF v1; later HDF5)
+      age: 1992
+      spec: https://en.wikibooks.org/wiki/MINC
+      open_source_tooling: [minc-toolkit-v2]
+
+    - name: ANALYZE 7.5
+      purpose: legacy MRI volumes (paired .hdr/.img)
+      encoding: binary
+      age: 1986
+      successor: NIfTI (still backward compatible)
+      story: |
+        Two files for one volume, no standard for which axis was which,
+        no provision for orientation. Required institutional folklore
+        to interpret. NIfTI was born to kill it; ANALYZE 7.5 still
+        ships in software releases.
+
+  electrophysiology:
+
+    - name: NWB (Neurodata Without Borders)
+      purpose: unified container for cellular and systems neurophysiology
+      dimensionality: mixed (raster_nd + tabular + metadata)
+      encoding: container (HDF5; Zarr backend emerging)
+      efficiency: 4
+      age: 2017
+      spec: https://nwb-schema.readthedocs.io/
+      governing_body: NWB Consortium (Kavli + Allen + Berkeley)
+      open_source_tooling: [pynwb, matnwb, neuroconv, spikeinterface]
+      flagship_corpus: DANDI Archive
+      public_repositories: [DANDI]
+      story: |
+        Came out of the Allen Institute's frustration that every
+        electrophysiology rig wrote its own incompatible format. NWB
+        defines a schema (NWB-N), not just a container, so files are
+        actually queryable.
+
+    - name: EDF / EDF+
+      purpose: continuous biosignal recordings (EEG, EMG, polysomnography)
+      dimensionality: tabular_2d (time × channel)
+      encoding: binary (16-bit integers + ASCII header)
+      efficiency: 2
+      age: 1992 (EDF) / 2003 (EDF+)
+      spec: https://www.edfplus.info/specs/edf.html
+      open_source_tooling: [mne-python, pyedflib, edfbrowser]
+      shared_by: [sleep medicine, cardiology (some)]
+      quirks: |
+        Header strings are ASCII space-padded; many writers truncate
+        or null-terminate, breaking strict readers. Sample rates can
+        vary per channel, which surprises everyone.
+
+    - name: BrainVision (.eeg + .vhdr + .vmrk)
+      purpose: EEG recordings (Brain Products)
+      encoding: binary + text headers
+      age: 1990s
+      spec: https://www.brainproducts.com/downloads.php
+      open_source_tooling: [mne-python, fieldtrip]
+      quirks: three-file bundle, like 10x MTX; like Shapefile
+
+    - name: NEV / NSx (Blackrock)
+      purpose: high-channel-count electrophysiology
+      encoding: binary
+      open_source_tooling: [brpylib, neo, spikeinterface]
+
+    - name: Open Ephys Binary
+      purpose: open-source ephys acquisition output
+      encoding: binary + JSON
+      age: 2018
+      open_source_tooling: [open-ephys-python-tools]
+
+  connectomics:
+
+    - name: TrackVis .trk / MRtrix .tck
+      purpose: diffusion MRI streamlines
+      dimensionality: graph (set of polylines)
+      encoding: binary
+      open_source_tooling: [nibabel, dipy, mrtrix3]
+
+
+# ============================================================================
+# MEDICAL IMAGING & CLINICAL DATA
+# ============================================================================
+
+medicine:
+
+  imaging:
+
+    - name: DICOM
+      purpose: medical imaging + accompanying metadata (radiology, cardio, path)
+      dimensionality: raster_nd + record
+      encoding: binary (tag-value records, often with embedded JPEG/JP2/HEVC)
+      efficiency: 3
+      age: 1993 (DICOM 3.0; ACR-NEMA precursor 1985)
+      spec: https://www.dicomstandard.org/current
+      self_describing: yes (tagged with VR/VM data dictionary)
+      governing_body: NEMA / MITA / DICOM Standards Committee
+      license: open (free download, but standard is huge)
+      successor: DICOMweb (REST/JSON wrapper); no replacement of the bytes
+      estimated_count_and_size:
+        order_of_magnitude: "hundreds of EB cumulatively in clinical PACS
+          systems worldwide; ~3.6B exams/year × growing slice counts"
+        basis: |
+          Industry analyses (Collective Minds 2025) put per-hospital
+          archives at ~2.5 PB; ~25k hospitals globally with active PACS;
+          the rough cumulative is on the order of 50–100 EB and rising.
+      public_repositories: [TCIA, IDC (Imaging Data Commons), OpenNeuro PET, NLST]
+      open_source_tooling:
+        [dcmtk, pydicom, gdcm, dicom2nifti, orthanc, dcm4che, monai-deploy]
+      shared_by: [radiology, oncology, ophthalmology, pathology (WSI), neuroscience]
+      quirks: |
+        Tags are addressed as (group, element) pairs in hex.
+        VR (Value Representation) is sometimes implicit (relies on the
+        data dictionary) and sometimes explicit; vendors disagree.
+        Private tags carry vendor-specific data that nobody else can
+        parse. Pixel data may be inside a Pixel Data Sequence with
+        per-frame compressed fragments. Wholeslide images can be 4 GB
+        per file before tiling.
+      story: |
+        Born in 1985 as ACR-NEMA, became DICOM in 1993. Every CT, MRI,
+        X-ray, ultrasound, mammogram, and many endoscopes in the world
+        emit DICOM. The PS3.x specification is ~5,000 pages across 20
+        parts. It's possibly the most successful self-describing
+        binary format ever written; almost nobody has read it cover
+        to cover.
+
+  clinical:
+
+    - name: HL7 v2.x
+      purpose: clinical message exchange (ADT, ORM, ORU, ...)
+      encoding: text (pipe/caret/tilde-delimited)
+      age: 1989
+      spec: http://www.hl7.org/implement/standards/product_brief.cfm?product_id=185
+      governing_body: HL7 International
+      successor: HL7 FHIR
+      open_source_tooling: [hapi, hl7apy, mirth]
+      quirks: |
+        The pipe-delimited segments are not parseable without a
+        version-specific data dictionary; field semantics drift between
+        2.3, 2.3.1, 2.5, 2.5.1, 2.7. Every implementation is a slightly
+        different dialect; entire careers exist mapping between them.
+
+    - name: HL7 FHIR
+      purpose: modern clinical interoperability (REST + JSON/XML)
+      encoding: JSON, XML, RDF
+      age: 2014
+      spec: https://www.hl7.org/fhir/
+      governing_body: HL7 International
+      open_source_tooling: [fhir.resources (py), hapi-fhir, fhirclient]
+
+    - name: CDA / C-CDA
+      purpose: clinical documents (discharge summaries, etc.)
+      encoding: XML
+      age: 2005
+
+    - name: OMOP CDM (not a format, a relational schema)
+      purpose: harmonized health-record data model
+      encoding: relational (CSV/parquet on disk)
+      age: 2009
+      spec: https://www.ohdsi.org/data-standardization/the-common-data-model/
+
+  genomics_clinical:
+    - name: VCF (clinical subset)
+      purpose: variant reports for clinical interpretation
+      see: life_sciences.genomics
+
+
+# ============================================================================
+# ASTRONOMY & ASTROPHYSICS
+# ============================================================================
+
+astronomy:
+
+  general:
+
+    - name: FITS
+      purpose: images, spectra, tables, cubes. Everything astronomy
+      dimensionality: raster_nd + tabular_2d + record
+      encoding: text headers + binary payloads (80-char "cards" in 2880-byte blocks)
+      efficiency: 3
+      age: 1981
+      spec: https://fits.gsfc.nasa.gov/fits_standard.html
+      self_describing: yes (HDU headers carry WCS, BUNIT, COMMENT, HISTORY)
+      compression: optional (RICE, GZIP, HCOMPRESS tile compression)
+      indexable: no native index; HEALPix tiling is conventional
+      streaming: yes
+      governing_body: IAU FITS Working Group
+      license: public
+      successor: none has succeeded; ASDF aims for new instruments but FITS persists
+      estimated_count_and_size:
+        order_of_magnitude: "hundreds of PB globally; Rubin/LSST alone will
+          produce ~0.5 EB over 10 years; SDSS+Pan-STARRS+ZTF archives are
+          multi-PB each"
+        basis: "Rubin Observatory data plan; ESA/NASA archive sizes"
+      public_repositories:
+        [MAST, IRSA, ESO archive, NOIRLab Astro Data Lab, HEASARC, CADC, JAXA DARTS]
+      open_source_tooling: [astropy, ds9, cfitsio, fv, fitsverify, topcat]
+      shared_by: [some particle physics legacy, planetary science]
+      quirks: |
+        Header keywords are 8 uppercase chars max. CONTINUE for long
+        strings. HIERARCH for nested keys. Floats serialized as ASCII
+        in the header are subtly precision-lossy. Big-endian. There is
+        a "Random Groups" structure nobody outside radio astronomy uses
+        but which still exists in the spec.
+      story: |
+        Designed in 1981 around 9-track tape, 80-char punch cards, and
+        2880-byte tape blocks (= 36 cards). The IAU FITS Working Group
+        is the only standards body in this catalog that has formal
+        veto authority over keyword names. Changes to FITS take years
+        and are deliberate; this is why it has outlived everything.
+
+    - name: VOTable
+      purpose: tabular catalogs with rich metadata (Virtual Observatory)
+      encoding: XML
+      age: 2002
+      spec: https://www.ivoa.net/documents/VOTable/
+      governing_body: International Virtual Observatory Alliance
+      open_source_tooling: [astropy, topcat, stilts]
+
+    - name: ASDF (Advanced Scientific Data Format)
+      purpose: hybrid YAML+binary container; JWST, Roman
+      dimensionality: mixed
+      encoding: text (YAML tree) + binary blocks
+      efficiency: 4
+      age: 2015
+      spec: https://asdf-standard.readthedocs.io/
+      governing_body: STScI
+      open_source_tooling: [asdf (python), asdf-astropy]
+      story: |
+        The "we love FITS but we have learned things" format. YAML
+        for the tree (so you can diff and grep), binary blocks for
+        the data. JWST adopted it as the canonical mission format.
+
+    - name: CASA Measurement Set (MS)
+      purpose: radio interferometry visibilities
+      dimensionality: tabular_2d (visibilities) + mixed
+      encoding: container (CASA table system, custom binary)
+      age: 2000s
+      spec: https://casa.nrao.edu/Memos/229.html
+      open_source_tooling: [casacore, python-casacore, casa]
+      shared_by: [radio astronomy only]
+
+    - name: HEALPix (.fits as carrier)
+      purpose: equal-area pixelization of the sphere
+      dimensionality: sequence (ordered pixels) over a sphere
+      age: 2005
+      spec: https://healpix.sourceforge.io/
+      shared_by: [cosmology, geodesy]
+
+
+# ============================================================================
+# HIGH-ENERGY PHYSICS
+# ============================================================================
+
+physics:
+
+  high_energy:
+
+    - name: ROOT (.root, TTree)
+      purpose: experiment data + analysis objects (LHC, Belle II, ...)
+      dimensionality: tabular_2d (TTree) + mixed C++ objects
+      encoding: container (custom; columnar via TTree branches)
+      efficiency: 5
+      age: 1995
+      spec: https://root.cern/manual/io_custom_classes/
+      self_describing: yes (StreamerInfo records the C++ class layout)
+      compression: required (LZ4, LZMA, ZSTD selectable)
+      indexable: yes (TBaskets + TTreeCache)
+      governing_body: CERN ROOT team
+      successor: RNTuple (next-gen ROOT IO, ~2024 onward)
+      estimated_count_and_size:
+        order_of_magnitude: "ATLAS + CMS alone: ~EB-scale active storage on
+          WLCG; cumulative HEP ROOT data has crossed 1 EB"
+        basis: "WLCG annual report; CERN open data portal"
+      public_repositories: [CERN Open Data Portal, HEPData, INSPIRE]
+      open_source_tooling: [root, uproot, awkward-array, coffea]
+      shared_by: [nuclear physics, neutrino, dark matter]
+      story: |
+        Rene Brun's C++ replacement for the PAW/CERN library written in
+        FORTRAN. ROOT is simultaneously a file format, an interpreter,
+        a histogram library, a build system, and a religion. Uproot
+        exists because pip-installing ROOT was, for a decade, the
+        bottleneck in HEP data science.
+
+    - name: HepMC3
+      purpose: Monte Carlo event records (truth-level events)
+      encoding: text or HDF5
+      age: 2000 (HepMC), 2018 (HepMC3)
+      spec: https://gitlab.cern.ch/hepmc/HepMC3
+
+    - name: LHE (Les Houches Event)
+      purpose: parton-level events from matrix-element generators
+      encoding: XML
+      age: 2006
+      spec: https://arxiv.org/abs/hep-ph/0609017
+
+    - name: YODA
+      purpose: histograms for HEP analysis (Rivet output)
+      encoding: text or HDF5
+      age: 2013
+      open_source_tooling: [yoda, rivet]
+
+  nuclear:
+
+    - name: ENDF
+      purpose: evaluated nuclear data libraries (cross-sections, decay)
+      encoding: text (fixed-format, 80-col, FORTRAN-style)
+      age: 1969
+      spec: https://www.nndc.bnl.gov/endf-b8.1/
+      governing_body: Cross Section Evaluation Working Group
+      story: |
+        Fortran fixed-format from 1969, still the basis of every reactor
+        simulation. The format has line numbers IN THE LINE.
+
+  particle_accelerator:
+
+    - name: SDDS (Self Describing Data Set)
+      purpose: accelerator simulation/diagnostic data
+      encoding: text or binary header + data
+      age: 1990s
+      open_source_tooling: [SDDS, elegant]
+
+
+# ============================================================================
+# EARTH SCIENCES (climate, atmosphere, ocean, geology)
+# ============================================================================
+
+earth_sciences:
+
+  climate_and_atmospheric:
+
+    - name: NetCDF (netCDF-4)
+      purpose: array data with rich metadata (climate, ocean, atmosphere)
+      dimensionality: raster_nd
+      encoding: container (HDF5 for v4; classic format for v3)
+      efficiency: 5
+      age: 1990 (classic); 2008 (netCDF-4 on HDF5)
+      spec: https://www.unidata.ucar.edu/software/netcdf/docs/
+      self_describing: yes (dimensions, variables, attributes; CF conventions)
+      compression: optional (deflate, szip, zstd)
+      indexable: yes (dimensions + chunked storage)
+      governing_body: Unidata
+      successor: Zarr for cloud workflows; netCDF-4 itself remains canonical
+      estimated_count_and_size:
+        order_of_magnitude: "CMIP6 + ERA5 + EOSDIS together exceed 100 PB;
+          climate model output globally is multi-EB"
+        basis: "NASA EOSDIS 2024 holdings (~85 PB); ECMWF ERA5 ~15 PB"
+      public_repositories:
+        [NASA EOSDIS, NOAA NCEI, ECMWF CDS, ESGF (CMIP), Copernicus]
+      open_source_tooling: [netCDF-C, xarray, nco, cdo, ncview, panoply, iris]
+      shared_by: [oceanography, hydrology, neuroscience (some), GIS]
+      story: |
+        Unidata at UCAR designed it for atmospheric science in 1990.
+        The CF (Climate and Forecast) Metadata Conventions are why
+        every climate model output, regardless of source, exposes
+        latitude/longitude/time the same way. CF is the BIDS of climate.
+
+    - name: GRIB1 / GRIB2
+      purpose: gridded meteorological data (forecasts, analyses)
+      dimensionality: raster_2d + time
+      encoding: binary (record-oriented, custom packing)
+      efficiency: 5
+      age: 1985 (GRIB1) / 2003 (GRIB2)
+      spec: https://www.wmo.int/pages/prog/www/WMOCodes/Guides/GRIB/GRIB1-Contents.html
+      governing_body: WMO
+      successor: GRIB2 (incompatible bytes; same role)
+      estimated_count_and_size:
+        order_of_magnitude: "ECMWF MARS archive ~600 PB, mostly GRIB"
+        basis: ECMWF infrastructure reports
+      public_repositories: [ECMWF, NOAA NOMADS, DWD Open Data, JMA]
+      open_source_tooling: [eccodes (ECMWF), wgrib2, cfgrib, xarray]
+      quirks: |
+        Variable codes (parameter, level type) require WMO tables that
+        ship separately. eccodes ships a 30-MB table directory just to
+        decode field names.
+
+    - name: BUFR
+      purpose: observational meteorological data (satellite obs, radiosondes)
+      encoding: binary (bit-packed)
+      age: 1988
+      spec: https://www.wmo.int/pages/prog/www/WMOCodes.html
+      governing_body: WMO
+      open_source_tooling: [eccodes]
+
+    - name: HDF-EOS
+      purpose: NASA Earth Observing System data
+      encoding: container (HDF4 or HDF5 with EOS conventions)
+      age: 1994
+      spec: https://hdfeos.org/
+
+    - name: Zarr
+      purpose: chunked, compressed, N-dimensional arrays on object storage
+      dimensionality: raster_nd
+      encoding: container (directory tree of compressed chunks + JSON metadata)
+      efficiency: 5
+      age: 2016
+      spec: https://zarr-specs.readthedocs.io/
+      governing_body: Zarr community
+      successor: Zarr v3 (current)
+      open_source_tooling: [zarr-python, tensorstore, xarray, kerchunk]
+      shared_by: [bioimaging (OME-Zarr), genomics (TileDB-SOMA), neuroscience]
+      story: |
+        Zarr is the cloud-native answer to HDF5: same N-D arrays, but
+        chunks live as separate files (or S3 objects), so you can
+        range-read them, write concurrently, and skip the HDF5 SWMR
+        dance entirely.
+
+  seismology:
+
+    - name: SEG-Y
+      purpose: seismic survey data (oil & gas, marine)
+      dimensionality: tabular_2d (traces × samples) + record
+      encoding: binary (40-card EBCDIC text header + 400-byte binary header + traces)
+      efficiency: 3
+      age: 1975
+      spec: https://library.seg.org/pb-assets/technical-standards/seg_y_rev2_0-mar2017-1686080998003.pdf
+      governing_body: SEG Technical Standards Committee
+      successor: SEG-D (acquisition); OSDU initiative replacing whole stack
+      open_source_tooling: [segyio, ObsPy, seismic_zfp]
+      shared_by: [marine seismology]
+      quirks: |
+        EBCDIC text header. IBM hexadecimal floating-point (not IEEE
+        754) as the default sample format until SEG-Y Rev 1 (2002)
+        made IEEE optional. Every commercial seismic library has a
+        "convert IBM float" function.
+      story: |
+        1975 spec, when the oil industry was still on IBM mainframes.
+        It remains production-critical in 2026 because a single seismic
+        survey is millions of dollars and nobody wants to re-archive.
+        The OSDU (Open Subsurface Data Universe) is the industry's
+        attempt at a clean break, very slowly.
+
+    - name: miniSEED
+      purpose: seismological time series (data centers)
+      encoding: binary (record-oriented, fixed 256/512-byte records typical)
+      age: 1992
+      spec: https://www.fdsn.org/pdf/SEEDManual_V2.4.pdf
+      governing_body: FDSN (International Federation of Digital Seismograph Networks)
+      open_source_tooling: [obspy, libmseed]
+
+    - name: SAC (Seismic Analysis Code)
+      purpose: per-station single-trace seismic data
+      encoding: binary
+      age: 1980s
+      open_source_tooling: [obspy, sac]
+
+  geophysics_well_logs:
+
+    - name: LAS (Log ASCII Standard)
+      purpose: wireline well log data
+      encoding: text
+      age: 1989
+      spec: https://www.cwls.org/products/
+      open_source_tooling: [lasio, welly]
+      quirks: shares acronym with LIDAR LAS, completely unrelated
+
+
+# ============================================================================
+# GEOSPATIAL / GIS / REMOTE SENSING
+# ============================================================================
+
+geospatial:
+
+  vector:
+
+    - name: Shapefile
+      purpose: vector GIS features (points, lines, polygons)
+      dimensionality: mixed (geometry + attributes)
+      encoding: binary (.shp + .shx) + dBASE IV (.dbf) + .prj + .cpg + ...
+      efficiency: 2
+      age: 1993
+      spec: https://www.esri.com/content/dam/esrisites/sitecore-archive/Files/Pdfs/library/whitepapers/pdfs/shapefile.pdf
+      self_describing: weak (no proper schema; types via .dbf)
+      indexable: spatial index via .qix / .sbn
+      governing_body: Esri (de facto open spec)
+      successor: GeoPackage, FlatGeobuf, GeoParquet
+      open_source_tooling: [gdal/ogr, shapely, geopandas, fiona, qgis]
+      shared_by: [urban planning, ecology, hydrology, archaeology]
+      quirks: |
+        Field names cap at 10 chars (dBASE legacy). 2 GB hard limit.
+        CRS lives in a separate .prj file that may not match what the
+        .shp actually contains. The "Shapefile" is in fact a directory
+        of 3–9 files masquerading as one. Mixed geometry types in one
+        file are forbidden but tools disagree on enforcement.
+      story: |
+        Designed in 1993 by Esri for ArcView 2.0. Publicly documented
+        in 1998. Everyone hates it; everyone uses it. The GIS world's
+        Stockholm syndrome.
+
+    - name: GeoPackage (.gpkg)
+      purpose: modern Shapefile replacement
+      encoding: container (SQLite)
+      age: 2014
+      spec: https://www.geopackage.org/spec/
+      governing_body: OGC
+      open_source_tooling: [gdal/ogr, qgis, geopandas]
+
+    - name: GeoJSON
+      purpose: vector GIS over the web
+      encoding: text (JSON)
+      age: 2008 (de facto); 2016 (RFC 7946)
+      spec: https://datatracker.ietf.org/doc/html/rfc7946
+      governing_body: IETF
+      open_source_tooling: [geopandas, leaflet, mapbox-gl, turf.js]
+
+    - name: KML / KMZ
+      purpose: Google Earth / Maps geospatial markup
+      encoding: XML (KMZ = zipped KML)
+      age: 2008 (OGC standardization)
+      spec: https://www.ogc.org/standard/kml/
+
+    - name: GPX
+      purpose: GPS tracks and waypoints
+      encoding: XML
+      age: 2002
+      spec: https://www.topografix.com/gpx.asp
+
+    - name: FlatGeobuf
+      purpose: cloud-native streamable vector
+      encoding: binary (FlatBuffers-based)
+      age: 2018
+      spec: https://flatgeobuf.org/
+
+    - name: GeoParquet
+      purpose: vector data on top of Apache Parquet
+      encoding: binary (Parquet)
+      age: 2022
+      spec: https://geoparquet.org/
+
+  raster:
+
+    - name: GeoTIFF
+      purpose: georeferenced raster imagery
+      encoding: binary (TIFF + GeoTIFF tags)
+      age: 1995
+      spec: https://docs.ogc.org/is/19-008r4/19-008r4.html
+      successor: Cloud-Optimized GeoTIFF (COG), same bytes, tile-friendly
+      open_source_tooling: [gdal, rasterio, geotiff-js, qgis]
+      shared_by: [remote sensing, planetary science]
+
+    - name: Cloud-Optimized GeoTIFF (COG)
+      purpose: GeoTIFF organized for HTTP range requests
+      encoding: binary (TIFF)
+      age: 2016 (community convention)
+      spec: https://www.cogeo.org/
+      story: |
+        COG is the GeoTIFF version of bigWig: same format, layout
+        constraint makes it cloud-native. No new bytes, just a layout
+        contract. Now an OGC standard.
+
+    - name: HDF-EOS
+      see: earth_sciences.climate_and_atmospheric
+
+  lidar:
+
+    - name: LAS / LAZ
+      purpose: lidar point clouds
+      dimensionality: tabular_2d (per-point) with embedded XYZ
+      encoding: binary; LAZ = LASzip-compressed
+      age: 2003
+      spec: https://www.asprs.org/divisions-committees/lidar-division/laser-las-file-format-exchange-activities
+      governing_body: ASPRS
+      successor: COPC (Cloud-Optimized Point Cloud)
+      open_source_tooling: [pdal, laspy, lastools, entwine]
+      shared_by: [autonomous vehicles, archaeology, forestry, civil engineering]
+
+    - name: COPC
+      purpose: cloud-optimized point cloud (LAZ + octree index)
+      age: 2021
+      spec: https://copc.io/
+
+
+# ============================================================================
+# CHEMISTRY & CRYSTALLOGRAPHY
+# ============================================================================
+
+chemistry:
+
+  molecular:
+
+    - name: SMILES
+      purpose: linear textual notation for molecules
+      dimensionality: sequence
+      encoding: text (one line per molecule)
+      efficiency: 1
+      age: 1988
+      spec: http://opensmiles.org/opensmiles.html
+      governing_body: OpenSMILES (Daylight invented; OS is community successor)
+      open_source_tooling: [rdkit, openbabel, chemfp]
+      shared_by: [drug discovery, materials, cheminformatics ML]
+      quirks: |
+        Same molecule can be written ~10⁴ different ways; canonical
+        SMILES differs between RDKit, OpenEye, OpenBabel. Stereo is
+        notoriously fiddly. SMARTS extends SMILES for substructure
+        search and is its own dialect.
+
+    - name: InChI / InChIKey
+      purpose: canonical, hashable chemical identifier
+      encoding: text
+      age: 2005
+      spec: https://www.inchi-trust.org/
+      governing_body: IUPAC / InChI Trust
+      open_source_tooling: [rdkit, inchi (C lib), openbabel]
+      story: |
+        IUPAC's response to "SMILES is not canonical enough". InChIKey
+        is a 27-char hash useful as a database primary key.
+
+    - name: MOL / SDF
+      purpose: 2-D/3-D structures with bonds and properties
+      encoding: text (block-structured)
+      age: 1980s (MDL Information Systems)
+      spec: https://discover.3ds.com/ctfile-documentation-request-form
+      open_source_tooling: [rdkit, openbabel]
+      shared_by: [pharma, materials]
+
+    - name: MOL2 (Tripos)
+      purpose: 3-D structures + atom types + charges
+      encoding: text
+      age: 1990s
+
+    - name: PDBQT
+      purpose: docking-ready PDB variant (AutoDock)
+      encoding: text
+      open_source_tooling: [autodock-vina, openbabel]
+
+    - name: XYZ
+      purpose: simplest possible atomic coordinates
+      encoding: text (n atoms, comment, then x y z element per line)
+      open_source_tooling: [ase, openbabel]
+
+  crystallography:
+
+    - name: CIF
+      purpose: small-molecule crystallography records
+      dimensionality: record
+      encoding: text (STAR)
+      age: 1991
+      spec: https://www.iucr.org/resources/cif
+      governing_body: IUCr
+      open_source_tooling: [gemmi, pycifrw, cif2cell]
+      shared_by: [materials science, structural biology (mmCIF)]
+      flagship_corpus: Cambridge Structural Database (~1.3M structures)
+
+  spectroscopy:
+
+    - name: JCAMP-DX
+      purpose: spectral data (IR, NMR, MS, UV-Vis)
+      encoding: text
+      age: 1988
+      spec: http://www.jcamp-dx.org/
+      governing_body: IUPAC
+
+    - name: nmrML
+      purpose: NMR experiment data
+      encoding: XML
+      age: 2015
+      spec: https://nmrml.org/
+
+
+# ============================================================================
+# MATERIALS SCIENCE
+# ============================================================================
+
+materials_science:
+
+  - name: POSCAR / CONTCAR (VASP)
+    purpose: crystal structures for DFT calculations
+    encoding: text
+    age: 1990s (with VASP)
+    spec: https://www.vasp.at/wiki/index.php/POSCAR
+    open_source_tooling: [pymatgen, ase, asap3]
+    flagship_corpus: Materials Project
+
+  - name: CIF
+    see: chemistry.crystallography
+
+  - name: NeXus
+    purpose: standardized neutron/X-ray/muon experiment data
+    encoding: container (HDF5)
+    age: 2003
+    spec: https://www.nexusformat.org/
+    governing_body: NIAC (NeXus International Advisory Committee)
+    open_source_tooling: [h5py, nexusformat, mantid]
+    shared_by: [neutron sources, synchrotrons]
+
+  - name: Crystallographic Open Database (COD) format
+    purpose: open repository of crystal structures (CIF-based)
+    spec: https://www.crystallography.net/cod/format.html
+
+
+# ============================================================================
+# CRYO-EM (often listed under structural biology, but its file ecosystem
+# is distinct enough to warrant its own block)
+# ============================================================================
+
+cryo_em:
+
+  - name: MRC / CCP4
+    see: life_sciences.structural_biology
+
+  - name: EER (Electron Event Representation)
+    purpose: Falcon 4 detector raw data (compressed sparse events)
+    encoding: binary (TIFF container with custom IFDs)
+    age: 2020
+    open_source_tooling: [relion, tiffile (custom), motioncor]
+
+  - name: Star (RELION)
+    purpose: particle metadata tables for RELION
+    encoding: text (STAR)
+    open_source_tooling: [relion, pyrelion, starfile]
+    shared_by: [crystallography (CIF/STAR family)]
+
+
+# ============================================================================
+# STATISTICS & SOCIAL SCIENCES
+# ============================================================================
+
+social_sciences_and_stats:
+
+  - name: SPSS .sav / .zsav
+    purpose: survey data + value labels + variable labels
+    encoding: binary
+    age: 1968 (SPSS itself); current binary format ~1990s
+    spec: https://www.ibm.com/docs/en/spss-statistics
+    open_source_tooling: [pyreadstat, haven (R), pspp]
+    quirks: |
+      Value labels are stored separately from values; many CSV-export
+      pipelines drop them, losing essential metadata.
+
+  - name: Stata .dta
+    purpose: econometrics / epi datasets
+    encoding: "binary (versioned: 113, 114, 115, 117, 118, 119)"
+    age: 1985
+    spec: https://www.stata.com/help.cgi?dta
+    open_source_tooling: [pyreadstat, pandas, haven (R)]
+
+  - name: SAS .sas7bdat / .xpt
+    purpose: clinical trial datasets; FDA submissions
+    encoding: binary
+    spec: https://support.sas.com/techsup/technote/ts140.pdf
+    open_source_tooling: [pyreadstat, sas7bdat, haven (R)]
+    shared_by: [pharma clinical]
+    quirks: spec was reverse-engineered for years; partially documented now
+
+  - name: R .RData / .rds
+    purpose: R object serialization
+    encoding: binary (custom)
+    age: 1997
+    spec: https://cran.r-project.org/doc/manuals/r-release/R-ints.html#Serialization-Formats
+    open_source_tooling: [R, rpy2, pyreadr]
+    quirks: |
+      Loading .RData mutates the global namespace (the file decides
+      the variable names). Considered a misfeature for over a decade;
+      preserved for backward compatibility.
+
+  - name: DDI (Data Documentation Initiative)
+    purpose: metadata for survey / longitudinal datasets
+    encoding: XML
+    age: 2003
+    spec: https://ddialliance.org/
+
+
+# ============================================================================
+# ENGINEERING / CAD / MESH
+# ============================================================================
+
+engineering:
+
+  cad:
+
+    - name: STEP (ISO 10303-21)
+      purpose: 3-D product model data (CAD interchange)
+      encoding: text
+      age: 1994
+      spec: https://www.iso.org/standard/63141.html
+      governing_body: ISO TC 184
+      open_source_tooling: [opencascade, freecad, pythonocc]
+
+    - name: IGES
+      purpose: legacy CAD interchange
+      encoding: text (80-col records)
+      age: 1980
+      spec: https://filemonger.com/specs/igs/devdept.com/version6.pdf
+      successor: STEP
+      story: |
+        US Air Force initiative, frozen at v5.3 in 1996. Predates STEP.
+        Required for plenty of legacy aerospace and DoD workflows.
+
+    - name: DXF / DWG
+      purpose: AutoCAD interchange (DXF) / native (DWG)
+      encoding: text (DXF) / binary (DWG)
+      age: 1982
+      spec: https://help.autodesk.com/view/OARX/2024/ENU/?guid=GUID-235B22E0-A567-4CF6-92D3-38A2306D73F3
+      open_source_tooling: [ezdxf, libdxfrw, libredwg]
+      quirks: |
+        DWG spec is closed; LibreDWG is reverse-engineered. DXF is
+        "open" but Autodesk publishes only the current version's spec
+        and changes it yearly.
+
+  mesh:
+
+    - name: STL
+      purpose: 3-D printing meshes
+      encoding: binary or ASCII
+      age: 1987
+      spec: https://www.fabbers.com/tech/STL_Format
+      quirks: |
+        Holds only triangles. No units. No colors (except by convention).
+        Same triangle is typically duplicated for every face that
+        shares it. Most-shipped, least-expressive mesh format.
+
+    - name: OBJ + MTL
+      purpose: 3-D meshes with material
+      encoding: text
+      age: 1990s (Wavefront)
+      open_source_tooling: [trimesh, meshio, blender]
+
+    - name: VTK / VTU / VTP
+      purpose: scientific visualization meshes
+      encoding: text or binary or XML
+      age: 1993
+      spec: https://kitware.github.io/vtk-examples/site/VTKFileFormats/
+      open_source_tooling: [vtk, pyvista, paraview, meshio]
+      shared_by: [CFD, FEA, biomechanics]
+
+    - name: Exodus II
+      purpose: FEM meshes + results (Sandia)
+      encoding: container (NetCDF)
+      open_source_tooling: [exodus, meshio]
+
+    - name: glTF / GLB
+      purpose: 3-D scene transmission for the web
+      encoding: JSON + binary
+      age: 2017
+      spec: https://www.khronos.org/gltf/
+      governing_body: Khronos Group
+
+
+# ============================================================================
+# COMPUTING, ML, AND CROSS-CUTTING DATA FORMATS
+# ============================================================================
+
+computing_and_ml:
+
+  ml_and_arrays:
+
+    - name: NumPy .npy / .npz
+      purpose: NumPy array serialization
+      encoding: binary
+      age: 2010
+      spec: https://numpy.org/doc/stable/reference/generated/numpy.lib.format.html
+      open_source_tooling: [numpy]
+      shared_by: [every science using Python]
+
+    - name: Pickle (.pkl)
+      purpose: arbitrary Python object serialization
+      encoding: binary (stack-based bytecode)
+      age: 1994
+      spec: https://docs.python.org/3/library/pickle.html
+      quirks: |
+        Loading a pickle executes arbitrary code. Cited as a security
+        catastrophe at least once a year. Still load-bearing in
+        scientific Python because nothing else is as easy.
+      successor: SafeTensors (for tensors), JSON+npy for data, cloudpickle for code
+
+    - name: SafeTensors
+      purpose: tensor weights without code execution
+      encoding: binary (header JSON + raw tensors)
+      age: 2022
+      spec: https://github.com/huggingface/safetensors
+      open_source_tooling: [safetensors]
+      shared_by: [ML, scientific ML]
+
+    - name: GGUF
+      purpose: quantized LLM weights for llama.cpp
+      encoding: binary
+      age: 2023
+      spec: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
+
+    - name: ONNX
+      purpose: portable neural network graphs
+      encoding: binary (Protobuf)
+      age: 2017
+      spec: https://onnx.ai/onnx/
+
+    - name: TFRecord
+      purpose: TensorFlow training data
+      encoding: binary (Protobuf records)
+      age: 2015
+      spec: https://www.tensorflow.org/tutorials/load_data/tfrecord
+
+  cross_cutting_containers:
+
+    - name: HDF5
+      purpose: hierarchical, self-describing, chunked N-D arrays
+      dimensionality: mixed
+      encoding: container (binary)
+      efficiency: 4
+      age: 1998 (HDF5; HDF4 = 1988)
+      spec: https://docs.hdfgroup.org/hdf5/develop/_s_p_e_c.html
+      governing_body: HDF Group
+      successor: Zarr is competitor more than successor
+      open_source_tooling: [h5py, hdf5-c, pytables, h5pyd]
+      shared_by:
+        [climate, neuroscience (NWB), bioimaging, materials (NeXus),
+         single-cell (AnnData), structural biology (BinaryCIF), HEP (some)]
+      story: |
+        Born at NCSA for parallel scientific computing. Every major
+        scientific community has at some point built a schema on top
+        of HDF5 (NetCDF-4, NWB, OME, NeXus, AnnData...). The "let's
+        just use HDF5" decade was 2005–2020; Zarr is eating that lunch
+        on the cloud side.
+      quirks: |
+        SWMR (Single-Writer-Multiple-Reader) is brittle. File
+        corruption on crash is real if you don't fsync. The C library
+        is fast but historically not thread-safe by default. Cloud
+        access works (range reads on small files) but isn't native.
+
+    - name: Apache Parquet
+      purpose: columnar tabular data
+      dimensionality: tabular_2d
+      encoding: binary (columnar, page-oriented)
+      efficiency: 5
+      age: 2013
+      spec: https://parquet.apache.org/docs/file-format/
+      governing_body: Apache Software Foundation
+      open_source_tooling: [pyarrow, duckdb, polars, dask, spark]
+      shared_by: [genomics (Hail), astronomy (LSST adoption), neuroimaging tables]
+
+    - name: Apache Arrow / Feather
+      purpose: columnar in-memory + zero-copy IPC
+      age: 2016
+      spec: https://arrow.apache.org/docs/format/Columnar.html
+
+    - name: Avro
+      purpose: row-oriented schema-evolution-friendly serialization
+      encoding: binary
+      age: 2009
+      spec: https://avro.apache.org/docs/current/specification/
+
+    - name: TileDB
+      purpose: cloud-native multi-dimensional array DB
+      age: 2017
+      spec: https://docs.tiledb.com/main/background/architecture
+      shared_by: [genomics (TileDB-SOMA), GIS]
+
+
+# ============================================================================
+# CROSS-DOMAIN OBSERVATIONS
+# ============================================================================
+
+cross_domain_observations:
+
+  punch_card_descendants:
+    examples:
+      - "FITS (astronomy)"        # 80 chars, 2880-byte = 36-card blocks
+      - "PDB (structural bio)"    # 80-char fixed-column records
+      - "GenBank flat file"       # 80-col headers
+      - "ENDF (nuclear)"          # 80-col FORTRAN
+      - "SEG-Y (seismic)"         # 40 80-char EBCDIC text cards
+      - "IGES (CAD)"              # 80-col records
+      - "HL7 v2.x"                # not punch-card but same era of pipe-and-newline ethos
+    note: |
+      Almost every "legacy" scientific format encodes the IBM 029 keypunch's
+      80-column boundary. None of these communities can let go because the
+      cost of breaking parsing of decades of archived data exceeds the cost
+      of the awkwardness.
+
+  the_bundle_pattern:
+    examples:
+      - "Shapefile (.shp + .shx + .dbf + .prj + .cpg + ...)"
+      - "10x MTX (matrix.mtx + barcodes.tsv + features.tsv)"
+      - "BrainVision (.eeg + .vhdr + .vmrk)"
+      - "ANALYZE 7.5 (.hdr + .img)"
+    note: |
+      Multi-file bundles are a long-running scientific anti-pattern: rsync
+      drops files, tar bundles desync, half a dataset is a non-dataset.
+      Container formats (GeoPackage, NWB, OME-Zarr-as-directory) are the
+      modern fix.
+
+  hdf5_as_universal_basement:
+    examples:
+      - "NetCDF-4 (climate)"
+      - "NWB (neuroscience)"
+      - "NeXus (materials)"
+      - "AnnData / Loom (single-cell)"
+      - "HAL (comparative genomics)"
+      - "MINC2 (neuroimaging)"
+      - "BIOM v2 (microbiome)"
+    note: |
+      Whenever a community needed "container + chunks + metadata" between
+      2005 and 2020, they picked HDF5 and built a schema on top. Zarr is
+      now repeating the pattern for cloud workloads (OME-Zarr, Zarr-backed
+      AnnData, NWB-Zarr, the next NetCDF...).
+
+  reference_implementations_that_became_the_spec:
+    examples:
+      - "SAM/BAM (samtools)"
+      - "BED / bigWig (UCSC kent source)"
+      - "VCF (vcftools, then bcftools)"
+      - "NumPy .npy (numpy)"
+      - "Pickle (CPython)"
+    note: |
+      In several cases, the spec is just "whatever this C program does".
+      Bioinformatics is especially guilty. When a divergent implementation
+      finds an edge case, the canonical fix is to patch the reference
+      tool, not the spec.
+
+  the_xml_decade:
+    examples:
+      - "mzML / mzIdentML / mzTab (proteomics)"
+      - "PhyloXML / NeXML (phylogenetics)"
+      - "SBML / BioPAX / SBGN-ML (systems bio)"
+      - "VOTable (astronomy)"
+      - "HL7 CDA"
+      - "GeoJSON's precursor GML"
+      - "KML"
+    note: |
+      ~2003–2012 the working assumption was "XML is forever". For
+      base64-encoded float arrays inside XML this was a disaster of
+      bytes, and the field has been quietly rotating to HDF5/JSON
+      ever since.
+
+
+# ============================================================================
+# OMITTED
+# ============================================================================
+
+omitted:
+  reason: out of scope for this catalog
+  domains:
+    - linguistics / NLP corpora (CoNLL, BRAT, CHAT/CLAN)
+    - psychology / behavioral data (E-Prime, PsychoPy logs)
+    - economics historical (ICPSR formats)
+    - paleontology / museum specimen formats (Darwin Core)
+    - environmental sensor / IoT (SensorML, OGC SOS)
+    - chemical engineering process simulation (CAPE-OPEN)
+    - finance market data (FIX, ITCH, OUCH, arguably "science"
+      adjacent)
+    - bioacoustics (WAV, FLAC + metadata schemas like AAFC, ARBIMON)
+    - radio astronomy beyond CASA (UVFITS, Miriad, FITS-IDI)
+    - planetary science PDS labels (NASA PDS3/PDS4)
