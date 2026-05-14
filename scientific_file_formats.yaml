@@ -998,7 +998,7 @@ physics:
       purpose: evaluated nuclear data libraries (cross-sections, decay)
       encoding: text (fixed-format, 80-col, FORTRAN-style)
       age: 1969
-      spec: https://www.nndc.bnl.gov/endf-b8.1/
+      spec: https://www.nndc.bnl.gov/endf/project.html
       governing_body: Cross Section Evaluation Working Group
       story: |
         Fortran fixed-format from 1969, still the basis of every reactor
